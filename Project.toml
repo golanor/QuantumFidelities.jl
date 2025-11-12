@@ -1,0 +1,14 @@
+name = "QuantumFidelities"
+uuid = "2ef387fb-9d07-47da-a54a-a3406b531654"
+version = "0.1.0"
+authors = ["Or Golan <orgolan@duck.com>"]
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+TwoQubitWeylChamber = "cad078a0-0012-46f4-b55e-a945d44e115b"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
