@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using Random
 
 # Robustly include the module from the parent's src/ directory
 # This works whether you run `julia tests/tests.jl` from the root
@@ -39,7 +40,7 @@ function _generate_qpt_states(n_qubits::Int)
     states = single_qubit_states
     
     for i in 2:n_qubits
-        new_states = []
+        new_states = Matrix{ComplexF64}[]
         for state_i in single_qubit_states
             for state_j in states
                 push!(new_states, kron(state_i, state_j))
@@ -475,4 +476,186 @@ end
     
     # Fidelity should be 1/3 (from Test 7's analytic result)
     @test F_avg_I ≈ 1/3
+end
+
+@testset "Comprehensive Comparisons" begin
+
+    # --- Helpers ---
+    function random_unitary(d::Int)
+        M = randn(ComplexF64, d, d)
+        Q, R = qr(M)
+        Matrix(Q)
+    end
+    
+    # Gates
+    T_gate = ComplexF64[1 0; 0 exp(im*π/4)]
+    H_gate = (1/sqrt(2)) * ComplexF64[1 1; 1 -1]
+    
+    CNOT = ComplexF64[1 0 0 0; 0 1 0 0; 0 0 0 1; 0 0 1 0]
+    ISWAP = ComplexF64[1 0 0 0; 0 0 im 0; 0 im 0 0; 0 0 0 1]
+    CZ = ComplexF64[1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 -1]
+    
+    # Basis
+    basis1 = generate_pauli_basis(1)
+    basis2 = generate_pauli_basis(2)
+
+    @testset "Test 12: Single Qubit T vs T with Phase Error" begin
+        # T vs T * Rz(epsilon)
+        epsilon = 0.1
+        err = [exp(-im*epsilon/2) 0; 0 exp(im*epsilon/2)] # Rz(epsilon)
+        T_actual = T_gate * err
+        
+        # Channel for T_actual
+        chan(P) = T_actual * P * T_actual'
+        
+        # Nielsen
+        F_nielsen = nielsen_average_gate_fidelity_open(T_gate, chan, basis1)
+        
+        # Choi
+        J_ideal = compute_choi_matrix_ideal(T_gate)
+        J_actual = compute_choi_matrix_ideal(T_actual)
+        F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+        
+        @test F_nielsen ≈ F_choi
+    end
+
+    @testset "Test 13: Single Qubit H vs Depolarizing" begin
+        # H vs Depolarizing channel
+        p = 0.95
+        
+        # Channel: Apply H, then Depolarize
+        # E(rho) = Depol( H rho H' )
+        function depol_channel_after_H(P)
+            P_prime = H_gate * P * H_gate'
+            # General Depolarizing map: E(X) = p X + (1-p) Tr(X)/d I
+            return p * P_prime + (1-p) * tr(P_prime)/2 * Matrix{ComplexF64}(I, 2, 2)
+        end
+        
+        F_nielsen = nielsen_average_gate_fidelity_open(H_gate, depol_channel_after_H, basis1)
+        
+        # Choi
+        qpt_states = _generate_qpt_states(1)
+        output_states = [depol_channel_after_H(s) for s in qpt_states]
+        chi = compute_process_matrix(qpt_states, output_states, basis1)
+        J_actual = compute_choi_from_chi(chi, basis1)
+        J_ideal = compute_choi_matrix_ideal(H_gate)
+        
+        F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+        
+        @test F_nielsen ≈ F_choi
+    end
+
+    @testset "Test 14: CNOT vs CNOT (Perfect)" begin
+         F_2q = two_qubit_gate_fidelity(CNOT, CNOT)
+         @test F_2q ≈ 1.0
+         
+         J_ideal = compute_choi_matrix_ideal(CNOT)
+         F_choi = choi_average_gate_fidelity(J_ideal, J_ideal)
+         @test F_choi ≈ 1.0
+         
+         chan(P) = CNOT * P * CNOT'
+         F_nielsen = nielsen_average_gate_fidelity_open(CNOT, chan, basis2)
+         @test F_nielsen ≈ 1.0
+    end
+
+    @testset "Test 15: CNOT vs CNOT with X error" begin
+        # Error on target qubit (qubit 2)
+        # I tensor X
+        IX = kron(ComplexF64[1 0; 0 1], ComplexF64[0 1; 1 0])
+        CNOT_err = CNOT * IX # Apply X error after CNOT
+        
+        # 1. two_qubit_gate_fidelity
+        F_2q = two_qubit_gate_fidelity(CNOT, CNOT_err)
+        
+        # 2. Nielsen
+        chan(P) = CNOT_err * P * CNOT_err'
+        F_nielsen = nielsen_average_gate_fidelity_open(CNOT, chan, basis2)
+        
+        # 3. Choi
+        J_ideal = compute_choi_matrix_ideal(CNOT)
+        J_actual = compute_choi_matrix_ideal(CNOT_err)
+        F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+        
+        @test F_2q ≈ F_nielsen
+        @test F_2q ≈ F_choi
+    end
+    
+    @testset "Test 16: iSWAP vs iSWAP with Z error" begin
+        # Error on qubit 1
+        # Z tensor I
+        ZI = kron(ComplexF64[1 0; 0 -1], ComplexF64[1 0; 0 1])
+        ISWAP_err = ISWAP * ZI
+        
+        F_2q = two_qubit_gate_fidelity(ISWAP, ISWAP_err)
+        
+        chan(P) = ISWAP_err * P * ISWAP_err'
+        F_nielsen = nielsen_average_gate_fidelity_open(ISWAP, chan, basis2)
+        
+        J_ideal = compute_choi_matrix_ideal(ISWAP)
+        J_actual = compute_choi_matrix_ideal(ISWAP_err)
+        F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+        
+        @test F_2q ≈ F_nielsen
+        @test F_2q ≈ F_choi
+    end
+
+    @testset "Test 17: CZ vs CZ with coherent over-rotation" begin
+        # CZ is diag(1,1,1,-1).
+        # CZ_err = diag(1, 1, 1, exp(im * (pi + 0.1)))
+        CZ_err = Matrix{ComplexF64}(I, 4, 4)
+        CZ_err[4, 4] = exp(im * (π + 0.1))
+        
+        F_2q = two_qubit_gate_fidelity(CZ, CZ_err)
+        
+        chan(P) = CZ_err * P * CZ_err'
+        F_nielsen = nielsen_average_gate_fidelity_open(CZ, chan, basis2)
+        
+        J_ideal = compute_choi_matrix_ideal(CZ)
+        J_actual = compute_choi_matrix_ideal(CZ_err)
+        F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+        
+        @test F_2q ≈ F_nielsen
+        @test F_2q ≈ F_choi
+    end
+
+    @testset "Test 18: Random Unitary Comparison" begin
+        U1 = random_unitary(4)
+        U2 = random_unitary(4)
+        
+        F_2q = two_qubit_gate_fidelity(U1, U2)
+        
+        chan(P) = U2 * P * U2'
+        F_nielsen = nielsen_average_gate_fidelity_open(U1, chan, basis2)
+        
+        J_ideal = compute_choi_matrix_ideal(U1)
+        J_actual = compute_choi_matrix_ideal(U2)
+        F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+        
+        @test F_2q ≈ F_nielsen
+        @test F_2q ≈ F_choi
+    end
+
+    @testset "Test 19: CNOT vs Depolarizing Channel (Two Qubit)" begin
+         # CNOT vs Depol(CNOT)
+         p = 0.9
+         
+         # Channel: Apply CNOT, then depolarize
+         function depol_cnot(P)
+             P_out = CNOT * P * CNOT'
+             return p * P_out + (1-p) * tr(P_out)/4 * Matrix{ComplexF64}(I, 4, 4)
+         end
+         
+         F_nielsen = nielsen_average_gate_fidelity_open(CNOT, depol_cnot, basis2)
+         
+         # Choi
+         qpt_states2 = _generate_qpt_states(2)
+         out_states = [depol_cnot(s) for s in qpt_states2]
+         chi = compute_process_matrix(qpt_states2, out_states, basis2)
+         J_actual = compute_choi_from_chi(chi, basis2)
+         J_ideal = compute_choi_matrix_ideal(CNOT)
+         
+         F_choi = choi_average_gate_fidelity(J_ideal, J_actual)
+         
+         @test F_nielsen ≈ F_choi
+    end
 end
