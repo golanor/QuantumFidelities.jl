@@ -1,6 +1,6 @@
 name = "QuantumFidelities"
 uuid = "2ef387fb-9d07-47da-a54a-a3406b531654"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Or Golan <orgolan@duck.com>"]
 
 [deps]
